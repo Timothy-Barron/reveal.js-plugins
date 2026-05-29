@@ -1,0 +1,28 @@
+# Chalkboard Plugin Changelog
+
+## 2.3.3 (modified) — Timothy Barron fork
+
+### New features
+
+- **Surface Pen eraser tip support**: The eraser end of a Surface Pen (or any pen device reporting `buttons & 32`) activates erase mode automatically.
+- **Configurable erase mode** (`eraserMode` config option):
+  - `'pixel'` — sponge/circular area erase (default)
+  - `'object'` — stroke erase: touching any part of a stroke removes it whole (PowerPoint-style)
+  - `'user'` — shows a toggle button in the palette so the user can switch between modes at runtime
+- **Sponge cursor matches erase area**: The cursor image is generated at runtime as a circle scaled to `eraser.radius`, so the visible cursor and the erased area are always the same size and perfectly aligned.
+- **Public API additions**: `eraseStrokeAtPage(pageX, pageY)` and `setEraserRadius(r)` exposed on `window.RevealChalkboard`.
+
+### Bug fixes
+
+- Fixed `div.overlay` CSS positioning so the drawing canvas correctly covers the full viewport.
+- Fixed `eraseWithSponge()` so the cleared circle is centered on the pointer position rather than offset to the bottom-right.
+- Fixed `colorIndex()` public wrapper to forward its argument.
+- Fixed `changeCursor()` to guard against an undefined tool object.
+- Fixed `drawWithChalk()` to guard against a negative color index (eraser mode).
+- Fixed `configure()` to merge `config.eraser` with `Object.assign` instead of replacing the whole object; the original code discarded `eraser.src` when the user supplied a partial eraser config, which became critical once `createSpongeCursor()` depended on `eraser.src` at runtime.
+- Fixed `initStorage()` to distinguish between no saved data (normal first-run, logged at `console.log`) and corrupt/unparseable data (logged as `console.warn` with the error attached).
+- Fixed purple boardmarker color: `rgba(150,0,20150,1)` → `rgba(150,0,150,1)` (pre-existing typo caused it to render as white).
+
+### Asset changes
+
+- `img/sponge.png` cropped from 40×50 to 40×40 (removed transparent bottom padding).

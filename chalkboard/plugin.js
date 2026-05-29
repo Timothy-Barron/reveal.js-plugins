@@ -3,7 +3,12 @@
  **
  ** A plugin for reveal.js adding a chalkboard.
  **
- ** Version: 2.3.3
+ ** Version: 2.3.3 (modified)
+ **
+ ** Modifications (Timothy Barron fork — see CHANGELOG.md for details):
+ **   - Surface Pen eraser tip support
+ **   - Configurable erase mode: sponge (pixel), stroke (object), or user-toggleable
+ **   - Sponge cursor sized and centered to match the erase area
  **
  ** License: MIT license (see LICENSE.md)
  **
@@ -29,8 +34,8 @@ window.RevealChalkboard = window.RevealChalkboard || {
     toggleChalkboard: function () {
         toggleChalkboard();
     },
-    colorIndex: function () {
-        colorIndex();
+    colorIndex: function (idx) {
+        colorIndex(idx);
     },
     colorNext: function () {
         colorNext();
@@ -55,6 +60,12 @@ window.RevealChalkboard = window.RevealChalkboard || {
     },
     download: function () {
         download();
+    },
+    eraseStrokeAtPage: function (pageX, pageY) {
+        eraseStrokeAtPage(pageX, pageY);
+    },
+    setEraserRadius: function (radius) {
+        eraser.radius = radius;
     },
 };
 
@@ -123,7 +134,7 @@ const initChalkboard = function (Reveal) {
         cursor: 'url(' + path + 'img/boardmarker-orange.png), auto'
     },
     {
-        color: 'rgba(150,0,20150,1)',
+        color: 'rgba(150,0,150,1)',
         cursor: 'url(' + path + 'img/boardmarker-purple.png), auto'
     },
     {
@@ -163,6 +174,27 @@ const initChalkboard = function (Reveal) {
 
     var sponge = {
         cursor: 'url(' + path + 'img/sponge.png), auto'
+    }
+
+    // scale the sponge icon to the size of the eraser radius
+    function createSpongeCursor() {
+        var r = eraser.radius;
+        var size = r * 2;
+        var canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        var ctx = canvas.getContext('2d');
+        var img = new Image();
+        img.onload = function () {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(r, r, r, 0, Math.PI * 2);
+            ctx.clip();
+            ctx.drawImage(img, 0, 0, size, size);
+            ctx.restore();
+            sponge.cursor = 'url(' + canvas.toDataURL('image/png') + ') ' + r + ' ' + r + ', auto';
+        };
+        img.src = eraser.src;
     }
 
 
@@ -222,6 +254,8 @@ const initChalkboard = function (Reveal) {
 
     var readOnly = false;
     var messageType = 'broadcast';
+    var eraserMode = 'pixel'; // config: 'pixel', 'object', or 'user' (shows toggle button)
+    var activeEraseMode = 'pixel'; // runtime: 'pixel' or 'object'
 
     var config = configure(Reveal.getConfig().chalkboard || {});
     if (config.keyBindings) {
@@ -236,7 +270,7 @@ const initChalkboard = function (Reveal) {
         if (config.chalkWidth) chalkWidth = config.chalkWidth;
         if (config.chalkEffect) chalkEffect = config.chalkEffect;
         if (config.rememberColor) rememberColor = config.rememberColor;
-        if (config.eraser) eraser = config.eraser;
+        if (config.eraser) eraser = Object.assign({}, eraser, config.eraser);
         if (config.boardmarkers) boardmarkers = config.boardmarkers;
         if (config.chalks) chalks = config.chalks;
 
@@ -275,6 +309,10 @@ const initChalkboard = function (Reveal) {
 
         if (config.readOnly != undefined) readOnly = config.readOnly;
         if (config.messageType) messageType = config.messageType;
+        if (config.eraserMode) {
+            eraserMode = config.eraserMode;
+            activeEraseMode = (eraserMode === 'object') ? 'object' : 'pixel';
+        }
 
         if (drawingCanvas && (config.theme || config.background || config.grid)) {
             var canvas = document.getElementById(drawingCanvas[1].id);
@@ -330,6 +368,7 @@ const initChalkboard = function (Reveal) {
 
     var drawing = false;
     var erasing = false;
+    var currentStrokeId = 0;
 
     var slideStart = Date.now();
     var slideIndices = {
@@ -346,6 +385,7 @@ const initChalkboard = function (Reveal) {
     var playback = false;
 
     function changeCursor(element, tool) {
+        if (!tool) return;
         element.style.cursor = tool.cursor;
         var palette = document.querySelector('.palette[data-mode="' + mode + '"]');
         if (palette) {
@@ -402,6 +442,25 @@ const initChalkboard = function (Reveal) {
         });
         list.appendChild(eraserButton);
 
+        // Erase mode toggle button — only shown when eraserMode === 'user'
+        if (eraserMode === 'user') {
+            var modeToggle = document.createElement('li');
+            modeToggle.classList.add('erase-mode-toggle');
+            modeToggle.setAttribute('data-erase-toggle', 'true');
+            modeToggle.title = 'Sponge erase — click to switch to stroke erase';
+            modeToggle.innerHTML = '<i class="fas fa-eraser erase-mode-icon"></i>' +
+                '<span class="erase-mode-label">sponge</span>';
+            modeToggle.addEventListener('click', function (e) {
+                activeEraseMode = activeEraseMode === 'pixel' ? 'object' : 'pixel';
+                updateEraseModeButtons();
+            });
+            modeToggle.addEventListener('touchstart', function (e) {
+                activeEraseMode = activeEraseMode === 'pixel' ? 'object' : 'pixel';
+                updateEraseModeButtons();
+            });
+            list.appendChild(modeToggle);
+        }
+
         palette.appendChild(list);
         return palette;
     };
@@ -424,7 +483,6 @@ const initChalkboard = function (Reveal) {
         var container = document.createElement('div');
         container.id = drawingCanvas[id].id;
         container.classList.add('overlay');
-        container.classList.add('r-overlay');
         container.setAttribute('data-prevent-swipe', 'true');
         container.oncontextmenu = function () {
             return false;
@@ -546,6 +604,10 @@ const initChalkboard = function (Reveal) {
      * Initialize storage.
      */
     function initStorage(json) {
+        if (!json || json === 'null') {
+            console.log("Chalkboard: no saved drawings found, starting fresh.");
+            return false;
+        }
         var success = false;
         try {
             var data = JSON.parse(json);
@@ -563,7 +625,7 @@ const initChalkboard = function (Reveal) {
             success = true;
             storage = data;
         } catch (err) {
-            console.warn("Cannot initialise storage!");
+            console.warn("Chalkboard: failed to load saved drawings.", err);
         }
         return success;
     }
@@ -910,6 +972,7 @@ const initChalkboard = function (Reveal) {
 
     function drawWithChalk(context, fromX, fromY, toX, toY, colorIdx) {
         if (colorIdx == undefined) colorIdx = color[mode];
+        if (colorIdx < 0) return; // eraser mode, skip drawing
         var brushDiameter = chalkWidth;
         context.lineWidth = brushDiameter;
         context.lineCap = 'round';
@@ -937,15 +1000,67 @@ const initChalkboard = function (Reveal) {
         }
     }
 
+    function distToSegment(px, py, x1, y1, x2, y2) {
+        var dx = x2 - x1, dy = y2 - y1;
+        var lenSq = dx * dx + dy * dy;
+        if (lenSq === 0) {
+            dx = px - x1; dy = py - y1;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+        var t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+        var nx = x1 + t * dx, ny = y1 + t * dy;
+        dx = px - nx; dy = py - ny;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function eraseStrokeAtPage(pageX, pageY) {
+        var scale = drawingCanvas[mode].scale;
+        var xOffset = drawingCanvas[mode].xOffset;
+        var yOffset = drawingCanvas[mode].yOffset;
+        var x = (pageX - xOffset) / scale;
+        var y = (pageY - yOffset) / scale;
+        var radius = eraser.radius / scale;
+
+        var slideData = getSlideData();
+        var toRemove = new Set();
+        for (var i = 0; i < slideData.events.length; i++) {
+            var ev = slideData.events[i];
+            if (ev.type !== 'draw' || ev.strokeId == null) continue;
+            if (mode === 1 && ev.board !== board) continue;
+            if (distToSegment(x, y, ev.x1, ev.y1, ev.x2, ev.y2) <= radius) {
+                toRemove.add(ev.strokeId);
+            }
+        }
+        if (toRemove.size === 0) return;
+
+        slideData.events = slideData.events.filter(function (ev) {
+            return ev.type !== 'draw' || ev.strokeId == null || !toRemove.has(ev.strokeId);
+        });
+        storageChanged();
+
+        // Redraw canvas from remaining events
+        clearCanvas(mode);
+        var now = Date.now() - slideStart;
+        for (var i = 0; i < slideData.events.length; i++) {
+            var ev = slideData.events[i];
+            if (ev.time > now) break;
+            if (mode === 1 && ev.board !== board) continue;
+            var t = ev.type;
+            if (t === 'draw' || t === 'erase' || t === 'clear' || t === 'selectboard') {
+                playEvent(mode, ev, now);
+            }
+        }
+    }
+
     function eraseWithSponge(context, x, y) {
         context.save();
         context.beginPath();
-        context.arc(x + eraser.radius, y + eraser.radius, eraser.radius, 0, 2 * Math.PI, false);
+        context.arc(x, y, eraser.radius, 0, 2 * Math.PI, false);
         context.clip();
-        context.clearRect(x - 1, y - 1, eraser.radius * 2 + 2, eraser.radius * 2 + 2);
+        context.clearRect(x - eraser.radius - 1, y - eraser.radius - 1, eraser.radius * 2 + 2, eraser.radius * 2 + 2);
         context.restore();
         if (mode == 1 && grid) {
-            redrawGrid(x + eraser.radius, y + eraser.radius, eraser.radius);
+            redrawGrid(x, y, eraser.radius);
         }
     }
 
@@ -1391,8 +1506,53 @@ const initChalkboard = function (Reveal) {
         erasing = false;
     }
 
+    function startErasingAt(pageX, pageY) {
+        var scale = drawingCanvas[mode].scale;
+        var xOffset = drawingCanvas[mode].xOffset;
+        var yOffset = drawingCanvas[mode].yOffset;
+        drawing = false;
+        erasing = true;
+        if (activeEraseMode === 'object') {
+            eraseStrokeAtPage(pageX, pageY);
+        } else {
+            erasePoint((pageX - xOffset) / scale, (pageY - yOffset) / scale);
+        }
+    }
+
+    function updateEraseModeButtons() {
+        document.querySelectorAll('.erase-mode-toggle').forEach(function (btn) {
+            var label = btn.querySelector('.erase-mode-label');
+            if (activeEraseMode === 'pixel') {
+                btn.classList.remove('active');
+                btn.title = 'Sponge erase — click to switch to stroke erase';
+                if (label) label.textContent = 'sponge';
+                setEraseModeIcon(btn, 'fa-eraser');
+            } else {
+                btn.classList.add('active');
+                btn.title = 'Stroke erase — click to switch to sponge erase';
+                if (label) label.textContent = 'stroke';
+                setEraseModeIcon(btn, 'fa-bezier-curve');
+            }
+        });
+    }
+
+    function setEraseModeIcon(btn, iconName) {
+        var existing = btn.querySelector('.erase-mode-icon');
+        var newIcon = document.createElement('i');
+        newIcon.setAttribute('class', 'fas ' + iconName + ' erase-mode-icon');
+        if (existing) {
+            btn.replaceChild(newIcon, existing);
+        } else {
+            btn.insertBefore(newIcon, btn.firstChild);
+        }
+        if (window.FontAwesome) {
+            window.FontAwesome.dom.i2svg({ node: btn });
+        }
+    }
+
     function startDrawing(x, y) {
         drawing = true;
+        currentStrokeId++;
 
         var ctx = drawingCanvas[mode].context;
         var scale = drawingCanvas[mode].scale;
@@ -1414,7 +1574,8 @@ const initChalkboard = function (Reveal) {
             x1: fromX,
             y1: fromY,
             x2: toX,
-            y2: toY
+            y2: toY,
+            strokeId: currentStrokeId
         });
 
         if (
@@ -1454,7 +1615,7 @@ const initChalkboard = function (Reveal) {
                 mouseX = touch.pageX;
                 mouseY = touch.pageY;
                 if (color[mode] < 0) {
-                    startErasing((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
+                    startErasingAt(mouseX, mouseY);
                 }
                 else {
                     startDrawing((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
@@ -1497,19 +1658,23 @@ const initChalkboard = function (Reveal) {
                     lastX = mouseX;
                     lastY = mouseY;
                 } else {
-                    erasePoint((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
-                    // broadcast
-                    var message = new CustomEvent(messageType);
-                    message.content = {
-                        sender: 'chalkboard-plugin',
-                        type: 'erase',
-                        timestamp: Date.now() - slideStart,
-                        mode,
-                        board,
-                        x: (mouseX - xOffset) / scale,
-                        y: (mouseY - yOffset) / scale
-                    };
-                    document.dispatchEvent(message);
+                    if (activeEraseMode === 'object') {
+                        eraseStrokeAtPage(mouseX, mouseY);
+                    } else {
+                        erasePoint((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
+                        // broadcast
+                        var message = new CustomEvent(messageType);
+                        message.content = {
+                            sender: 'chalkboard-plugin',
+                            type: 'erase',
+                            timestamp: Date.now() - slideStart,
+                            mode,
+                            board,
+                            x: (mouseX - xOffset) / scale,
+                            y: (mouseY - yOffset) / scale
+                        };
+                        document.dispatchEvent(message);
+                    }
                 }
 
             }
@@ -1535,22 +1700,24 @@ const initChalkboard = function (Reveal) {
 
                 if (color[mode] < 0 || evt.button == 2 || evt.button == 1) {
                     if (color[mode] >= 0) {
-                        // show sponge
+                        // show sponge cursor
                         changeCursor(drawingCanvas[mode].canvas, sponge);
                     }
-                    startErasing((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
-                    // broadcast
-                    var message = new CustomEvent(messageType);
-                    message.content = {
-                        sender: 'chalkboard-plugin',
-                        type: 'erase',
-                        timestamp: Date.now() - slideStart,
-                        mode,
-                        board,
-                        x: (mouseX - xOffset) / scale,
-                        y: (mouseY - yOffset) / scale
-                    };
-                    document.dispatchEvent(message);
+                    startErasingAt(mouseX, mouseY);
+                    if (activeEraseMode === 'pixel') {
+                        // broadcast pixel erase
+                        var message = new CustomEvent(messageType);
+                        message.content = {
+                            sender: 'chalkboard-plugin',
+                            type: 'erase',
+                            timestamp: Date.now() - slideStart,
+                            mode,
+                            board,
+                            x: (mouseX - xOffset) / scale,
+                            y: (mouseY - yOffset) / scale
+                        };
+                        document.dispatchEvent(message);
+                    }
                 } else {
                     startDrawing((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
                 }
@@ -1597,19 +1764,23 @@ const initChalkboard = function (Reveal) {
                     lastX = mouseX;
                     lastY = mouseY;
                 } else {
-                    erasePoint((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
-                    // broadcast
-                    var message = new CustomEvent(messageType);
-                    message.content = {
-                        sender: 'chalkboard-plugin',
-                        type: 'erase',
-                        timestamp: Date.now() - slideStart,
-                        mode,
-                        board,
-                        x: (mouseX - xOffset) / scale,
-                        y: (mouseY - yOffset) / scale
-                    };
-                    document.dispatchEvent(message);
+                    if (activeEraseMode === 'object') {
+                        eraseStrokeAtPage(mouseX, mouseY);
+                    } else {
+                        erasePoint((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
+                        // broadcast
+                        var message = new CustomEvent(messageType);
+                        message.content = {
+                            sender: 'chalkboard-plugin',
+                            type: 'erase',
+                            timestamp: Date.now() - slideStart,
+                            mode,
+                            board,
+                            x: (mouseX - xOffset) / scale,
+                            y: (mouseY - yOffset) / scale
+                        };
+                        document.dispatchEvent(message);
+                    }
                 }
 
             }
@@ -1964,7 +2135,44 @@ const initChalkboard = function (Reveal) {
     this.updateStorage = updateStorage;
     this.getData = getData;
     this.configure = configure;
+    this.eraseStrokeAtPage = eraseStrokeAtPage;
+    this.setEraserRadius = function (radius) { eraser.radius = radius; createSpongeCursor(); };
 
+    // Build the sponge cursor from the configured eraser radius
+    createSpongeCursor();
+
+    (function setupPenEraser() {
+        var penEraserActive = false;
+        var penPreviousColorIndex = 0;
+
+        document.addEventListener('pointerdown', function (e) {
+            if (e.pointerType === 'pen' && (e.buttons & 32) !== 0 && !penEraserActive) {
+                penEraserActive = true;
+                penPreviousColorIndex = color[mode] >= 0 ? color[mode] : 0;
+                colorIndex(-1);
+            }
+        }, true);
+
+        document.addEventListener('pointermove', function (e) {
+            if (e.pointerType === 'pen' && (e.buttons & 32) !== 0) {
+                if (activeEraseMode === 'object') {
+                    eraseStrokeAtPage(e.pageX, e.pageY);
+                } else {
+                    var scale = drawingCanvas[mode].scale;
+                    var xOffset = drawingCanvas[mode].xOffset;
+                    var yOffset = drawingCanvas[mode].yOffset;
+                    erasePoint((e.pageX - xOffset) / scale, (e.pageY - yOffset) / scale);
+                }
+            }
+        }, true);
+
+        document.addEventListener('pointerup', function (e) {
+            if (e.pointerType === 'pen' && penEraserActive && (e.buttons & 32) === 0) {
+                penEraserActive = false;
+                colorIndex(penPreviousColorIndex);
+            }
+        }, true);
+    })();
 
     for (var key in keyBindings) {
         if (keyBindings[key]) {
