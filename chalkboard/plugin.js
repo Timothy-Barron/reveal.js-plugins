@@ -111,7 +111,8 @@ const initChalkboard = function (Reveal) {
     var rememberColor = [true, false];
     var eraser = {
         src: path + 'img/sponge.png',
-        radius: 20
+        radius: 20,
+        strokeRadius: 5
     };
     var boardmarkers = [{
         color: 'rgba(100,100,100,1)',
@@ -176,6 +177,14 @@ const initChalkboard = function (Reveal) {
         cursor: 'url(' + path + 'img/sponge.png), auto'
     }
 
+    var strokeErase = {
+        cursor: 'crosshair'
+    };
+
+    function currentEraseCursor() {
+        return activeEraseMode === 'object' ? strokeErase : sponge;
+    }
+
     // scale the sponge icon to the size of the eraser radius
     function createSpongeCursor() {
         var r = eraser.radius;
@@ -195,6 +204,37 @@ const initChalkboard = function (Reveal) {
             sponge.cursor = 'url(' + canvas.toDataURL('image/png') + ') ' + r + ' ' + r + ', auto';
         };
         img.src = eraser.src;
+    }
+
+    // generate a small circle-outline cursor for stroke erase mode
+    function createStrokeEraseCursor() {
+        var r = eraser.strokeRadius;
+        var pad = 2;
+        var size = r * 2 + pad * 2;
+        var cx = r + pad;
+        var cy = r + pad;
+        var canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        var ctx = canvas.getContext('2d');
+        // dark outer ring for contrast on light backgrounds
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+        ctx.stroke();
+        // white inner ring
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.stroke();
+        // center dot
+        ctx.beginPath();
+        ctx.arc(cx, cy, 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fill();
+        strokeErase.cursor = 'url(' + canvas.toDataURL('image/png') + ') ' + cx + ' ' + cy + ', crosshair';
     }
 
 
@@ -1019,7 +1059,7 @@ const initChalkboard = function (Reveal) {
         var yOffset = drawingCanvas[mode].yOffset;
         var x = (pageX - xOffset) / scale;
         var y = (pageY - yOffset) / scale;
-        var radius = eraser.radius / scale;
+        var radius = eraser.strokeRadius / scale;
 
         var slideData = getSlideData();
         var toRemove = new Set();
@@ -1187,7 +1227,7 @@ const initChalkboard = function (Reveal) {
 
         if (color[mode] < 0) {
             // use eraser
-            changeCursor(drawingCanvas[mode].canvas, sponge);
+            changeCursor(drawingCanvas[mode].canvas, currentEraseCursor());
         }
         else {
             changeCursor(drawingCanvas[mode].canvas, pens[mode][color[mode]]);
@@ -1534,6 +1574,10 @@ const initChalkboard = function (Reveal) {
                 setEraseModeIcon(btn, 'fa-bezier-curve');
             }
         });
+        // refresh cursor if currently in erase mode
+        if (color[mode] < 0) {
+            changeCursor(drawingCanvas[mode].canvas, currentEraseCursor());
+        }
     }
 
     function setEraseModeIcon(btn, iconName) {
@@ -1700,8 +1744,8 @@ const initChalkboard = function (Reveal) {
 
                 if (color[mode] < 0 || evt.button == 2 || evt.button == 1) {
                     if (color[mode] >= 0) {
-                        // show sponge cursor
-                        changeCursor(drawingCanvas[mode].canvas, sponge);
+                        // show erase cursor
+                        changeCursor(drawingCanvas[mode].canvas, currentEraseCursor());
                     }
                     startErasingAt(mouseX, mouseY);
                     if (activeEraseMode === 'pixel') {
@@ -2137,9 +2181,11 @@ const initChalkboard = function (Reveal) {
     this.configure = configure;
     this.eraseStrokeAtPage = eraseStrokeAtPage;
     this.setEraserRadius = function (radius) { eraser.radius = radius; createSpongeCursor(); };
+    this.setStrokeEraserRadius = function (radius) { eraser.strokeRadius = radius; createStrokeEraseCursor(); };
 
-    // Build the sponge cursor from the configured eraser radius
+    // Build cursors from the configured eraser radii
     createSpongeCursor();
+    createStrokeEraseCursor();
 
     (function setupPenEraser() {
         var penEraserActive = false;

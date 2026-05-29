@@ -10,7 +10,8 @@
   - `'object'` — stroke erase: touching any part of a stroke removes it whole (PowerPoint-style)
   - `'user'` — shows a toggle button in the palette so the user can switch between modes at runtime
 - **Sponge cursor matches erase area**: The cursor image is generated at runtime as a circle scaled to `eraser.radius`, so the visible cursor and the erased area are always the same size and perfectly aligned.
-- **Public API additions**: `eraseStrokeAtPage(pageX, pageY)` and `setEraserRadius(r)` exposed on `window.RevealChalkboard`.
+- **Distinct cursor for stroke erase mode**: A small circle-outline cursor (sized to `eraser.strokeRadius`) is generated for stroke/object mode, visually distinguishing it from the filled sponge cursor. The stroke hit-test radius defaults to `5` for precise point-and-click erasure; configure via `eraser: { strokeRadius: N }`.
+- **Public API additions**: `eraseStrokeAtPage(pageX, pageY)`, `setEraserRadius(r)`, and `setStrokeEraserRadius(r)` exposed on `window.RevealChalkboard`.
 
 ### Bug fixes
 
