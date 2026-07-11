@@ -294,7 +294,7 @@ const initChalkboard = function (Reveal) {
 
     var readOnly = false;
     var messageType = 'broadcast';
-    var eraserMode = 'pixel'; // config: 'pixel', 'object', or 'user' (shows toggle button)
+    var eraserMode = 'user'; // config: 'pixel', 'object', or 'user' (shows toggle button)
     var activeEraseMode = 'pixel'; // runtime: 'pixel' or 'object'
 
     var config = configure(Reveal.getConfig().chalkboard || {});
@@ -305,6 +305,8 @@ const initChalkboard = function (Reveal) {
     }
 
     function configure(config) {
+
+        config = config || {};
 
         if (config.boardmarkerWidth || config.penWidth) boardmarkerWidth = config.boardmarkerWidth || config.penWidth;
         if (config.chalkWidth) chalkWidth = config.chalkWidth;
@@ -796,7 +798,8 @@ const initChalkboard = function (Reveal) {
                 return data;
             }
         }
-        var page = Number(Reveal.getCurrentSlide().getAttribute('data-pdf-page-number'));
+        var currentSlide = Reveal.getCurrentSlide ? Reveal.getCurrentSlide() : null;
+        var page = currentSlide ? Number(currentSlide.getAttribute('data-pdf-page-number')) : 0;
         //console.log( indices, Reveal.getCurrentSlide() );
         storage[id].data.push({
             slide: indices,
@@ -1053,12 +1056,8 @@ const initChalkboard = function (Reveal) {
         return Math.sqrt(dx * dx + dy * dy);
     }
 
-    function eraseStrokeAtPage(pageX, pageY) {
+    function eraseStrokeAt(x, y) {
         var scale = drawingCanvas[mode].scale;
-        var xOffset = drawingCanvas[mode].xOffset;
-        var yOffset = drawingCanvas[mode].yOffset;
-        var x = (pageX - xOffset) / scale;
-        var y = (pageY - yOffset) / scale;
         var radius = eraser.strokeRadius / scale;
 
         var slideData = getSlideData();
@@ -1071,14 +1070,14 @@ const initChalkboard = function (Reveal) {
                 toRemove.add(ev.strokeId);
             }
         }
-        if (toRemove.size === 0) return;
+        if (toRemove.size === 0) return false;
 
         slideData.events = slideData.events.filter(function (ev) {
             return ev.type !== 'draw' || ev.strokeId == null || !toRemove.has(ev.strokeId);
         });
         storageChanged();
 
-        // Redraw canvas from remaining events
+        // Redraw canvas from remaining events.
         clearCanvas(mode);
         var now = Date.now() - slideStart;
         for (var i = 0; i < slideData.events.length; i++) {
@@ -1089,6 +1088,33 @@ const initChalkboard = function (Reveal) {
             if (t === 'draw' || t === 'erase' || t === 'clear' || t === 'selectboard') {
                 playEvent(mode, ev, now);
             }
+        }
+
+        return true;
+    }
+
+    function broadcastStrokeErase(x, y) {
+        var message = new CustomEvent(messageType);
+        message.content = {
+            sender: 'chalkboard-plugin',
+            type: 'eraseStroke',
+            timestamp: Date.now() - slideStart,
+            mode,
+            board,
+            x,
+            y
+        };
+        document.dispatchEvent(message);
+    }
+
+    function eraseStrokeAtPage(pageX, pageY) {
+        var scale = drawingCanvas[mode].scale;
+        var xOffset = drawingCanvas[mode].xOffset;
+        var yOffset = drawingCanvas[mode].yOffset;
+        var x = (pageX - xOffset) / scale;
+        var y = (pageY - yOffset) / scale;
+        if (eraseStrokeAt(x, y)) {
+            broadcastStrokeErase(x, y);
         }
     }
 
@@ -1322,6 +1348,9 @@ const initChalkboard = function (Reveal) {
                 break;
             case 'erase':
                 erasePoint(message.content.x, message.content.y);
+                break;
+            case 'eraseStroke':
+                eraseStrokeAt(message.content.x, message.content.y);
                 break;
             case 'draw':
                 drawSegment(message.content.fromX, message.content.fromY, message.content.toX, message.content.toY, message.content.color);
