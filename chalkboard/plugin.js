@@ -1056,10 +1056,7 @@ const initChalkboard = function (Reveal) {
         return Math.sqrt(dx * dx + dy * dy);
     }
 
-    function eraseStrokeAt(x, y) {
-        var scale = drawingCanvas[mode].scale;
-        var radius = eraser.strokeRadius / scale;
-
+    function findStrokeIdsAt(x, y, radius) {
         var slideData = getSlideData();
         var toRemove = new Set();
         for (var i = 0; i < slideData.events.length; i++) {
@@ -1070,8 +1067,13 @@ const initChalkboard = function (Reveal) {
                 toRemove.add(ev.strokeId);
             }
         }
-        if (toRemove.size === 0) return false;
+        return toRemove;
+    }
 
+    function eraseStrokesById(toRemove) {
+        if (!toRemove || toRemove.size === 0) return false;
+
+        var slideData = getSlideData();
         slideData.events = slideData.events.filter(function (ev) {
             return ev.type !== 'draw' || ev.strokeId == null || !toRemove.has(ev.strokeId);
         });
@@ -1093,7 +1095,19 @@ const initChalkboard = function (Reveal) {
         return true;
     }
 
-    function broadcastStrokeErase(x, y) {
+    function eraseStrokeAt(x, y, strokeIds) {
+        var toRemove;
+        if (Array.isArray(strokeIds) && strokeIds.length > 0) {
+            toRemove = new Set(strokeIds);
+        } else {
+            var scale = drawingCanvas[mode].scale;
+            var radius = eraser.strokeRadius / scale;
+            toRemove = findStrokeIdsAt(x, y, radius);
+        }
+        return eraseStrokesById(toRemove);
+    }
+
+    function broadcastStrokeErase(x, y, strokeIds) {
         var message = new CustomEvent(messageType);
         message.content = {
             sender: 'chalkboard-plugin',
@@ -1102,7 +1116,8 @@ const initChalkboard = function (Reveal) {
             mode,
             board,
             x,
-            y
+            y,
+            strokeIds: strokeIds
         };
         document.dispatchEvent(message);
     }
@@ -1113,8 +1128,10 @@ const initChalkboard = function (Reveal) {
         var yOffset = drawingCanvas[mode].yOffset;
         var x = (pageX - xOffset) / scale;
         var y = (pageY - yOffset) / scale;
-        if (eraseStrokeAt(x, y)) {
-            broadcastStrokeErase(x, y);
+        var radius = eraser.strokeRadius / scale;
+        var toRemove = findStrokeIdsAt(x, y, radius);
+        if (eraseStrokesById(toRemove)) {
+            broadcastStrokeErase(x, y, Array.from(toRemove));
         }
     }
 
@@ -1350,10 +1367,10 @@ const initChalkboard = function (Reveal) {
                 erasePoint(message.content.x, message.content.y);
                 break;
             case 'eraseStroke':
-                eraseStrokeAt(message.content.x, message.content.y);
+                eraseStrokeAt(message.content.x, message.content.y, message.content.strokeIds);
                 break;
             case 'draw':
-                drawSegment(message.content.fromX, message.content.fromY, message.content.toX, message.content.toY, message.content.color);
+                drawSegment(message.content.fromX, message.content.fromY, message.content.toX, message.content.toY, message.content.color, message.content.strokeId);
                 break;
             case 'clear':
                 clearSlide();
@@ -1635,7 +1652,7 @@ const initChalkboard = function (Reveal) {
         lastY = y * scale + yOffset;
     }
 
-    function drawSegment(fromX, fromY, toX, toY, colorIdx) {
+    function drawSegment(fromX, fromY, toX, toY, colorIdx, strokeId) {
         var ctx = drawingCanvas[mode].context;
         var scale = drawingCanvas[mode].scale;
         var xOffset = drawingCanvas[mode].xOffset;
@@ -1648,7 +1665,7 @@ const initChalkboard = function (Reveal) {
             y1: fromY,
             x2: toX,
             y2: toY,
-            strokeId: currentStrokeId
+            strokeId: (strokeId != null ? strokeId : currentStrokeId)
         });
 
         if (
@@ -1724,7 +1741,8 @@ const initChalkboard = function (Reveal) {
                         fromY: (lastY - yOffset) / scale,
                         toX: (mouseX - xOffset) / scale,
                         toY: (mouseY - yOffset) / scale,
-                        color: color[mode]
+                        color: color[mode],
+                        strokeId: currentStrokeId
                     };
                     document.dispatchEvent(message);
 
@@ -1830,7 +1848,8 @@ const initChalkboard = function (Reveal) {
                         fromY: (lastY - yOffset) / scale,
                         toX: (mouseX - xOffset) / scale,
                         toY: (mouseY - yOffset) / scale,
-                        color: color[mode]
+                        color: color[mode],
+                        strokeId: currentStrokeId
                     };
                     document.dispatchEvent(message);
 
