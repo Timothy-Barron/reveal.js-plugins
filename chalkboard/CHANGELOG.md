@@ -4,7 +4,8 @@
 
 ### New features
 
-- **Surface Pen eraser tip support**: The eraser end of a Surface Pen (or any pen device reporting `buttons & 32`) activates erase mode automatically.
+- **Surface Pen eraser tip support**: The eraser end of a Surface Pen (or any pen device reporting `buttons & 32`) activates erase mode automatically. Note: Apple Pencil has no eraser tip/button and never sets this flag in Safari/WebKit, so this specific detection does not apply on iPad — use the native pencil gesture bridge below or the on-screen eraser/toggle button instead.
+- **Native pencil gesture support** (`pencilDoubleTap` / `pencilSqueeze` window events): Double-tap and squeeze aren't exposed to web content by Safari/WebKit, but a native app wrapper (e.g. a SwiftUI `WKWebView` host using `onPencilDoubleTap`/`onPencilSqueeze`) can forward them as custom DOM events. `pencilDoubleTap` toggles the eraser. `pencilSqueeze` erases only while held, keyed off `detail.phase` matching SwiftUI's `PencilSqueezePhase`: `'active'` starts erasing, `'ended'`/`'failed'` restores the previous color; any other/missing phase falls back to a simple toggle.
 - **Configurable erase mode** (`eraserMode` config option):
   - `'pixel'` — sponge/circular area erase (default)
   - `'object'` — stroke erase: touching any part of a stroke removes it whole (PowerPoint-style)

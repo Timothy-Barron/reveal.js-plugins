@@ -296,8 +296,6 @@ const initChalkboard = function (Reveal) {
     var messageType = 'broadcast';
     var eraserMode = 'user'; // config: 'pixel', 'object', or 'user' (shows toggle button)
     var activeEraseMode = 'pixel'; // runtime: 'pixel' or 'object'
-    var pressureEraseThreshold = null; // config: 0-1 pen pressure that triggers erase; null disables
-    var rotationEraseAngle = null; // config: degrees of pen rotation (twist/barrel roll) that triggers erase; null disables
 
     var config = configure(Reveal.getConfig().chalkboard || {});
     if (config.keyBindings) {
@@ -357,9 +355,6 @@ const initChalkboard = function (Reveal) {
             eraserMode = config.eraserMode;
             activeEraseMode = (eraserMode === 'object') ? 'object' : 'pixel';
         }
-        if (config.pressureEraseThreshold != undefined) pressureEraseThreshold = config.pressureEraseThreshold;
-        if (config.rotationEraseAngle != undefined) rotationEraseAngle = config.rotationEraseAngle;
-
         if (drawingCanvas && (config.theme || config.background || config.grid)) {
             var canvas = document.getElementById(drawingCanvas[1].id);
             canvas.style.background = 'url("' + background[1] + '") repeat';
@@ -1710,18 +1705,34 @@ const initChalkboard = function (Reveal) {
      ******************************************************************/
 
     // Apple Pencil has no eraser-tip/button, so buttons&32 detection never fires on iPad;
-    // a two-finger tap is offered as an equivalent gesture to toggle the eraser.
-    var twoFingerGesture = false;
-    var twoFingerPreviousColorIndex = 0;
+    // a native app wrapper forwarding pencilDoubleTap/pencilSqueeze events is used instead (see below).
+    // Shared state for any gesture that temporarily switches to the eraser and restores
+    // the previous color afterward: Surface Pen eraser tip (buttons&32) and native Pencil
+    // Pro squeeze both use begin/endMomentaryErase; double-tap uses the toggle variant.
+    var eraseGestureActive = false;
+    var eraseGesturePreviousColorIndex = 0;
 
     function toggleTouchEraser() {
         if (readOnly) return;
         if (color[mode] < 0) {
-            colorIndex(twoFingerPreviousColorIndex);
+            colorIndex(eraseGesturePreviousColorIndex);
         } else {
-            twoFingerPreviousColorIndex = color[mode];
+            eraseGesturePreviousColorIndex = color[mode];
             colorIndex(-1);
         }
+    }
+
+    function beginMomentaryErase() {
+        if (readOnly || eraseGestureActive) return;
+        eraseGestureActive = true;
+        eraseGesturePreviousColorIndex = color[mode] >= 0 ? color[mode] : eraseGesturePreviousColorIndex;
+        colorIndex(-1);
+    }
+
+    function endMomentaryErase() {
+        if (!eraseGestureActive) return;
+        eraseGestureActive = false;
+        colorIndex(eraseGesturePreviousColorIndex);
     }
 
     function setupCanvasEvents(canvas) {
@@ -1729,13 +1740,6 @@ const initChalkboard = function (Reveal) {
         canvas.addEventListener('touchstart', function (evt) {
             evt.preventDefault();
             //console.log("Touch start");
-            if (evt.touches.length >= 2) {
-                if (!twoFingerGesture) {
-                    twoFingerGesture = true;
-                    toggleTouchEraser();
-                }
-                return;
-            }
             if (!readOnly && evt.target.getAttribute('data-chalkboard') == mode) {
                 var scale = drawingCanvas[mode].scale;
                 var xOffset = drawingCanvas[mode].xOffset;
@@ -1758,7 +1762,6 @@ const initChalkboard = function (Reveal) {
         canvas.addEventListener('touchmove', function (evt) {
             evt.preventDefault();
             //console.log("Touch move");
-            if (twoFingerGesture) return;
             if (drawing || erasing) {
                 var scale = drawingCanvas[mode].scale;
                 var xOffset = drawingCanvas[mode].xOffset;
@@ -1815,9 +1818,6 @@ const initChalkboard = function (Reveal) {
 
         canvas.addEventListener('touchend', function (evt) {
             evt.preventDefault();
-            if (evt.touches.length < 2) {
-                twoFingerGesture = false;
-            }
             stopDrawing();
             stopErasing();
         }, false);
@@ -2280,14 +2280,9 @@ const initChalkboard = function (Reveal) {
     createStrokeEraseCursor();
 
     (function setupPenEraser() {
-        var penEraserActive = false;
-        var penPreviousColorIndex = 0;
-
         document.addEventListener('pointerdown', function (e) {
-            if (e.pointerType === 'pen' && (e.buttons & 32) !== 0 && !penEraserActive) {
-                penEraserActive = true;
-                penPreviousColorIndex = color[mode] >= 0 ? color[mode] : 0;
-                colorIndex(-1);
+            if (e.pointerType === 'pen' && (e.buttons & 32) !== 0) {
+                beginMomentaryErase();
             }
         }, true);
 
@@ -2305,123 +2300,34 @@ const initChalkboard = function (Reveal) {
         }, true);
 
         document.addEventListener('pointerup', function (e) {
-            if (e.pointerType === 'pen' && penEraserActive && (e.buttons & 32) === 0) {
-                penEraserActive = false;
-                colorIndex(penPreviousColorIndex);
+            if (e.pointerType === 'pen' && (e.buttons & 32) === 0) {
+                endMomentaryErase();
             }
         }, true);
     })();
 
-    // Apple Pencil reports pressure but has no eraser button; pressing hard
-    // toggles the eraser mid-stroke when pressureEraseThreshold is configured.
-    (function setupPressureEraser() {
-        if (pressureEraseThreshold == null) return;
+    // Apple Pencil double-tap and Pencil Pro squeeze aren't exposed to web content directly,
+    // but a native app wrapper can forward them as 'pencilDoubleTap'/'pencilSqueeze' events.
+    (function setupNativePencilGestureEraser() {
+        console.log('[chalkboard] native pencil gesture bridge initialized, listening for pencilDoubleTap/pencilSqueeze');
 
-        var pressureEraserActive = false;
-        var pressurePreviousColorIndex = 0;
+        window.addEventListener('pencilDoubleTap', function () {
+            console.log('[chalkboard] pencilDoubleTap received');
+            toggleTouchEraser();
+        });
 
-        function handlePressure(e) {
-            if (e.pointerType !== 'pen' || readOnly) return;
-            var highPressure = e.pressure >= pressureEraseThreshold;
-
-            if (highPressure && !pressureEraserActive) {
-                pressureEraserActive = true;
-                pressurePreviousColorIndex = color[mode] >= 0 ? color[mode] : pressurePreviousColorIndex;
-                if (drawing) {
-                    stopDrawing();
-                    startErasingAt(e.pageX, e.pageY);
-                }
-                setColor(-1);
-            } else if (!highPressure && pressureEraserActive) {
-                pressureEraserActive = false;
-                if (erasing) {
-                    stopErasing();
-                    var scale = drawingCanvas[mode].scale;
-                    var xOffset = drawingCanvas[mode].xOffset;
-                    var yOffset = drawingCanvas[mode].yOffset;
-                    startDrawing((e.pageX - xOffset) / scale, (e.pageY - yOffset) / scale);
-                }
-                setColor(pressurePreviousColorIndex);
+        window.addEventListener('pencilSqueeze', function (e) {
+            console.log('[chalkboard] pencilSqueeze received, phase:', e.detail && e.detail.phase);
+            // matches SwiftUI's PencilSqueezePhase: .active, .ended, .failed
+            var phase = e.detail && e.detail.phase;
+            if (phase === 'active') {
+                beginMomentaryErase();
+            } else if (phase === 'ended' || phase === 'failed') {
+                endMomentaryErase();
+            } else {
+                toggleTouchEraser();
             }
-        }
-
-        document.addEventListener('pointerdown', handlePressure, true);
-        document.addEventListener('pointermove', handlePressure, true);
-
-        document.addEventListener('pointerup', function (e) {
-            if (e.pointerType === 'pen' && pressureEraserActive) {
-                pressureEraserActive = false;
-                setColor(pressurePreviousColorIndex);
-            }
-        }, true);
-    })();
-
-    // Rotating the pen (e.g. ~180°, like flipping to the "back") toggles the eraser.
-    // Relies on hardware rotation sensing that plain Apple Pencil (1st/2nd gen) does not have:
-    // PointerEvent.twist (Wacom-style rotation-aware pens) or azimuthAngle (Apple Pencil Pro barrel roll, Safari 18.2+).
-    (function setupRotationEraser() {
-        if (rotationEraseAngle == null) return;
-
-        var rotationEraserActive = false;
-        var rotationPreviousColorIndex = 0;
-        var baseAngle = null;
-        var releaseAngle = Math.max(rotationEraseAngle - 40, 30); // hysteresis to avoid flicker near the threshold
-
-        function angleOf(e) {
-            if (e.twist) return e.twist; // degrees, 0-359
-            if (e.azimuthAngle != null) return e.azimuthAngle * 180 / Math.PI; // radians -> degrees
-            return null;
-        }
-
-        function angleDelta(a, b) {
-            // shortest distance between two angles on a 360° circle
-            return Math.abs(((a - b + 540) % 360) - 180);
-        }
-
-        function handleRotation(e) {
-            if (e.pointerType !== 'pen' || readOnly) return;
-            var angle = angleOf(e);
-            if (angle == null) return;
-            if (baseAngle == null) baseAngle = angle;
-
-            var delta = angleDelta(angle, baseAngle);
-
-            if (!rotationEraserActive && delta >= rotationEraseAngle) {
-                rotationEraserActive = true;
-                rotationPreviousColorIndex = color[mode] >= 0 ? color[mode] : rotationPreviousColorIndex;
-                if (drawing) {
-                    stopDrawing();
-                    startErasingAt(e.pageX, e.pageY);
-                }
-                setColor(-1);
-            } else if (rotationEraserActive && delta <= releaseAngle) {
-                rotationEraserActive = false;
-                if (erasing) {
-                    stopErasing();
-                    var scale = drawingCanvas[mode].scale;
-                    var xOffset = drawingCanvas[mode].xOffset;
-                    var yOffset = drawingCanvas[mode].yOffset;
-                    startDrawing((e.pageX - xOffset) / scale, (e.pageY - yOffset) / scale);
-                }
-                setColor(rotationPreviousColorIndex);
-            }
-        }
-
-        document.addEventListener('pointerdown', function (e) {
-            if (e.pointerType === 'pen') baseAngle = angleOf(e);
-            handleRotation(e);
-        }, true);
-        document.addEventListener('pointermove', handleRotation, true);
-
-        document.addEventListener('pointerup', function (e) {
-            if (e.pointerType === 'pen') {
-                baseAngle = null;
-                if (rotationEraserActive) {
-                    rotationEraserActive = false;
-                    setColor(rotationPreviousColorIndex);
-                }
-            }
-        }, true);
+        });
     })();
 
     for (var key in keyBindings) {
