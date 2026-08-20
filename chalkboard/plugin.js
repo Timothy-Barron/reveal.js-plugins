@@ -1332,6 +1332,10 @@ const initChalkboard = function (Reveal) {
 
     var eventQueue = [];
 
+    function isSeminarHost() {
+        return !!(window.RevealSeminar && typeof window.RevealSeminar.hosting === 'function' && window.RevealSeminar.hosting());
+    }
+
     document.addEventListener('received', function (message) {
         if (message.content && message.content.sender == 'chalkboard-plugin') {
             // add message to queue
@@ -1386,6 +1390,11 @@ const initChalkboard = function (Reveal) {
                 resetSlideDrawings();
                 break;
             case 'init':
+                if (isSeminarHost()) {
+                    // Host is authoritative and should not be overwritten by incoming snapshots.
+                    // TODO: Consider the case where there are 2 hosts
+                    break;
+                }
                 storage = message.content.storage;
                 for (var id = 0; id < 2; id++) {
                     drawingCanvas[id].scale = Math.min(drawingCanvas[id].width / storage[id].width, drawingCanvas[id].height / storage[id].height);
@@ -1418,12 +1427,17 @@ const initChalkboard = function (Reveal) {
         }
     }
 
-    document.addEventListener('welcome', function (user) {
-        // broadcast storage
-        var message = new CustomEvent(messageType);
+    document.addEventListener('welcome', function (event) {
+        // send storage snapshot to the newly joined participant only
+        var recipient = event && event.content && event.content.user && event.content.user.id;
+        if (!recipient) return;
+
+        // Use direct seminar messaging to avoid broadcasting init to all viewers.
+        var message = new CustomEvent('send');
         message.content = {
             sender: 'chalkboard-plugin',
-            recipient: user.id,
+            recipient: recipient,
+            copy: false,
             type: 'init',
             timestamp: Date.now() - slideStart,
             storage: storage,
