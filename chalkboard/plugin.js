@@ -296,6 +296,8 @@ const initChalkboard = function (Reveal) {
     var messageType = 'broadcast';
     var eraserMode = 'user'; // config: 'pixel', 'object', or 'user' (shows toggle button)
     var activeEraseMode = 'pixel'; // runtime: 'pixel' or 'object'
+    var pressureEraseThreshold = null; // config: 0-1 pen pressure that triggers erase; null disables
+    var rotationEraseAngle = null; // config: degrees of pen rotation (twist/barrel roll) that triggers erase; null disables
 
     var config = configure(Reveal.getConfig().chalkboard || {});
     if (config.keyBindings) {
@@ -355,6 +357,8 @@ const initChalkboard = function (Reveal) {
             eraserMode = config.eraserMode;
             activeEraseMode = (eraserMode === 'object') ? 'object' : 'pixel';
         }
+        if (config.pressureEraseThreshold != undefined) pressureEraseThreshold = config.pressureEraseThreshold;
+        if (config.rotationEraseAngle != undefined) rotationEraseAngle = config.rotationEraseAngle;
 
         if (drawingCanvas && (config.theme || config.background || config.grid)) {
             var canvas = document.getElementById(drawingCanvas[1].id);
@@ -1691,11 +1695,33 @@ const initChalkboard = function (Reveal) {
      ** User interface
      ******************************************************************/
 
+    // Apple Pencil has no eraser-tip/button, so buttons&32 detection never fires on iPad;
+    // a two-finger tap is offered as an equivalent gesture to toggle the eraser.
+    var twoFingerGesture = false;
+    var twoFingerPreviousColorIndex = 0;
+
+    function toggleTouchEraser() {
+        if (readOnly) return;
+        if (color[mode] < 0) {
+            colorIndex(twoFingerPreviousColorIndex);
+        } else {
+            twoFingerPreviousColorIndex = color[mode];
+            colorIndex(-1);
+        }
+    }
+
     function setupCanvasEvents(canvas) {
         // TODO: check all touchevents
         canvas.addEventListener('touchstart', function (evt) {
             evt.preventDefault();
             //console.log("Touch start");
+            if (evt.touches.length >= 2) {
+                if (!twoFingerGesture) {
+                    twoFingerGesture = true;
+                    toggleTouchEraser();
+                }
+                return;
+            }
             if (!readOnly && evt.target.getAttribute('data-chalkboard') == mode) {
                 var scale = drawingCanvas[mode].scale;
                 var xOffset = drawingCanvas[mode].xOffset;
@@ -1718,6 +1744,7 @@ const initChalkboard = function (Reveal) {
         canvas.addEventListener('touchmove', function (evt) {
             evt.preventDefault();
             //console.log("Touch move");
+            if (twoFingerGesture) return;
             if (drawing || erasing) {
                 var scale = drawingCanvas[mode].scale;
                 var xOffset = drawingCanvas[mode].xOffset;
@@ -1774,6 +1801,9 @@ const initChalkboard = function (Reveal) {
 
         canvas.addEventListener('touchend', function (evt) {
             evt.preventDefault();
+            if (evt.touches.length < 2) {
+                twoFingerGesture = false;
+            }
             stopDrawing();
             stopErasing();
         }, false);
@@ -2264,6 +2294,118 @@ const initChalkboard = function (Reveal) {
             if (e.pointerType === 'pen' && penEraserActive && (e.buttons & 32) === 0) {
                 penEraserActive = false;
                 colorIndex(penPreviousColorIndex);
+            }
+        }, true);
+    })();
+
+    // Apple Pencil reports pressure but has no eraser button; pressing hard
+    // toggles the eraser mid-stroke when pressureEraseThreshold is configured.
+    (function setupPressureEraser() {
+        if (pressureEraseThreshold == null) return;
+
+        var pressureEraserActive = false;
+        var pressurePreviousColorIndex = 0;
+
+        function handlePressure(e) {
+            if (e.pointerType !== 'pen' || readOnly) return;
+            var highPressure = e.pressure >= pressureEraseThreshold;
+
+            if (highPressure && !pressureEraserActive) {
+                pressureEraserActive = true;
+                pressurePreviousColorIndex = color[mode] >= 0 ? color[mode] : pressurePreviousColorIndex;
+                if (drawing) {
+                    stopDrawing();
+                    startErasingAt(e.pageX, e.pageY);
+                }
+                setColor(-1);
+            } else if (!highPressure && pressureEraserActive) {
+                pressureEraserActive = false;
+                if (erasing) {
+                    stopErasing();
+                    var scale = drawingCanvas[mode].scale;
+                    var xOffset = drawingCanvas[mode].xOffset;
+                    var yOffset = drawingCanvas[mode].yOffset;
+                    startDrawing((e.pageX - xOffset) / scale, (e.pageY - yOffset) / scale);
+                }
+                setColor(pressurePreviousColorIndex);
+            }
+        }
+
+        document.addEventListener('pointerdown', handlePressure, true);
+        document.addEventListener('pointermove', handlePressure, true);
+
+        document.addEventListener('pointerup', function (e) {
+            if (e.pointerType === 'pen' && pressureEraserActive) {
+                pressureEraserActive = false;
+                setColor(pressurePreviousColorIndex);
+            }
+        }, true);
+    })();
+
+    // Rotating the pen (e.g. ~180°, like flipping to the "back") toggles the eraser.
+    // Relies on hardware rotation sensing that plain Apple Pencil (1st/2nd gen) does not have:
+    // PointerEvent.twist (Wacom-style rotation-aware pens) or azimuthAngle (Apple Pencil Pro barrel roll, Safari 18.2+).
+    (function setupRotationEraser() {
+        if (rotationEraseAngle == null) return;
+
+        var rotationEraserActive = false;
+        var rotationPreviousColorIndex = 0;
+        var baseAngle = null;
+        var releaseAngle = Math.max(rotationEraseAngle - 40, 30); // hysteresis to avoid flicker near the threshold
+
+        function angleOf(e) {
+            if (e.twist) return e.twist; // degrees, 0-359
+            if (e.azimuthAngle != null) return e.azimuthAngle * 180 / Math.PI; // radians -> degrees
+            return null;
+        }
+
+        function angleDelta(a, b) {
+            // shortest distance between two angles on a 360° circle
+            return Math.abs(((a - b + 540) % 360) - 180);
+        }
+
+        function handleRotation(e) {
+            if (e.pointerType !== 'pen' || readOnly) return;
+            var angle = angleOf(e);
+            if (angle == null) return;
+            if (baseAngle == null) baseAngle = angle;
+
+            var delta = angleDelta(angle, baseAngle);
+
+            if (!rotationEraserActive && delta >= rotationEraseAngle) {
+                rotationEraserActive = true;
+                rotationPreviousColorIndex = color[mode] >= 0 ? color[mode] : rotationPreviousColorIndex;
+                if (drawing) {
+                    stopDrawing();
+                    startErasingAt(e.pageX, e.pageY);
+                }
+                setColor(-1);
+            } else if (rotationEraserActive && delta <= releaseAngle) {
+                rotationEraserActive = false;
+                if (erasing) {
+                    stopErasing();
+                    var scale = drawingCanvas[mode].scale;
+                    var xOffset = drawingCanvas[mode].xOffset;
+                    var yOffset = drawingCanvas[mode].yOffset;
+                    startDrawing((e.pageX - xOffset) / scale, (e.pageY - yOffset) / scale);
+                }
+                setColor(rotationPreviousColorIndex);
+            }
+        }
+
+        document.addEventListener('pointerdown', function (e) {
+            if (e.pointerType === 'pen') baseAngle = angleOf(e);
+            handleRotation(e);
+        }, true);
+        document.addEventListener('pointermove', handleRotation, true);
+
+        document.addEventListener('pointerup', function (e) {
+            if (e.pointerType === 'pen') {
+                baseAngle = null;
+                if (rotationEraserActive) {
+                    rotationEraserActive = false;
+                    setColor(rotationPreviousColorIndex);
+                }
             }
         }, true);
     })();
