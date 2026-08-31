@@ -2279,6 +2279,90 @@ const initChalkboard = function (Reveal) {
     createSpongeCursor();
     createStrokeEraseCursor();
 
+    // Auto-activate notes-on-slide drawing (mode 0, the 'C' hotkey) the moment a pen
+    // (Apple Pencil, Surface Pen, etc.) touches the slide, instead of requiring the hotkey first.
+    // The notes canvas has pointer-events:none while inactive, so this initial touch never
+    // reaches its own mouse/touch handlers; we start the stroke here and capture the pointer
+    // so the rest of the gesture is delivered to our canvas instead of whatever is underneath.
+    (function setupPenAutoDraw() {
+        document.addEventListener('pointerdown', function (e) {
+            if (e.pointerType !== 'pen' || readOnly || printMode || mode !== 0) return;
+
+            var container = drawingCanvas[0].container;
+            if (container.style.pointerEvents === 'auto') return; // already active, let normal handling proceed
+
+            e.preventDefault();
+            toggleNotesCanvas();
+
+            try { drawingCanvas[0].canvas.setPointerCapture(e.pointerId); } catch (err) { }
+
+            var scale = drawingCanvas[0].scale;
+            var xOffset = drawingCanvas[0].xOffset;
+            var yOffset = drawingCanvas[0].yOffset;
+            mouseX = e.pageX;
+            mouseY = e.pageY;
+            if (color[0] < 0) {
+                startErasingAt(mouseX, mouseY);
+            } else {
+                startDrawing((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
+            }
+        }, true);
+
+        document.addEventListener('pointermove', function (e) {
+            if (e.pointerType !== 'pen' || mode !== 0 || (!drawing && !erasing)) return;
+
+            var scale = drawingCanvas[0].scale;
+            var xOffset = drawingCanvas[0].xOffset;
+            var yOffset = drawingCanvas[0].yOffset;
+            mouseX = e.pageX;
+            mouseY = e.pageY;
+
+            if (drawing) {
+                drawSegment((lastX - xOffset) / scale, (lastY - yOffset) / scale, (mouseX - xOffset) / scale, (mouseY - yOffset) / scale, color[mode]);
+                var message = new CustomEvent(messageType);
+                message.content = {
+                    sender: 'chalkboard-plugin',
+                    type: 'draw',
+                    timestamp: Date.now() - slideStart,
+                    mode,
+                    board,
+                    fromX: (lastX - xOffset) / scale,
+                    fromY: (lastY - yOffset) / scale,
+                    toX: (mouseX - xOffset) / scale,
+                    toY: (mouseY - yOffset) / scale,
+                    color: color[mode],
+                    strokeId: currentStrokeId
+                };
+                document.dispatchEvent(message);
+                lastX = mouseX;
+                lastY = mouseY;
+            } else if (activeEraseMode === 'object') {
+                eraseStrokeAtPage(mouseX, mouseY);
+            } else {
+                erasePoint((mouseX - xOffset) / scale, (mouseY - yOffset) / scale);
+                var message = new CustomEvent(messageType);
+                message.content = {
+                    sender: 'chalkboard-plugin',
+                    type: 'erase',
+                    timestamp: Date.now() - slideStart,
+                    mode,
+                    board,
+                    x: (mouseX - xOffset) / scale,
+                    y: (mouseY - yOffset) / scale
+                };
+                document.dispatchEvent(message);
+            }
+        }, true);
+
+        document.addEventListener('pointerup', function (e) {
+            if (e.pointerType !== 'pen') return;
+            if (drawing || erasing) {
+                stopDrawing();
+                stopErasing();
+            }
+        }, true);
+    })();
+
     (function setupPenEraser() {
         document.addEventListener('pointerdown', function (e) {
             if (e.pointerType === 'pen' && (e.buttons & 32) !== 0) {
