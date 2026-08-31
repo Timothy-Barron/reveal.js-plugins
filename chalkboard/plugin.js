@@ -319,7 +319,7 @@ const initChalkboard = function (Reveal) {
         if (config.theme) theme = config.theme;
         switch (theme) {
             case 'whiteboard':
-                background = ['rgba(127,127,127,.1)', path + 'img/whiteboard.png'];
+                background = ['rgba(0,0,0,0)', path + 'img/whiteboard.png'];
                 draw = [drawWithBoardmarker, drawWithBoardmarker];
                 pens = [boardmarkers, boardmarkers];
                 grid = {
